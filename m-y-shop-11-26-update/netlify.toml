@@ -1,0 +1,13 @@
+[build]
+  publish = "."
+  functions = "netlify/functions"
+
+[functions]
+  included_files = ["data/products.json"]
+
+[[redirects]]
+  from = "/data/products.json"
+  to = "/.netlify/functions/products"
+  status = 200
+  force = true
+
