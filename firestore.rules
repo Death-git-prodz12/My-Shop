@@ -1,103 +1,21 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    function signedIn() {
-      return request.auth != null;
-    }
-
-    function ownsUser(userId) {
-      return signedIn() && request.auth.uid == userId;
-    }
-
-    function ownerProfilePath() {
-      return /databases/$(database)/documents/users/$(request.auth.uid);
-    }
-
-    function validWatchIds(data) {
-      return !data.keys().hasAny(['watchedProductIds'])
-        || (data.watchedProductIds is list && data.watchedProductIds.size() <= 30);
-    }
-
-    function validInitialProfile(data) {
-      return data.keys().hasOnly([
-          'sellerShopId', 'sellerPublicName', 'sellerDescription', 'sellerDirectoryEnabled',
-          'sellerProfileUpdatedAt', 'createdAt', 'accountCreatedAt', 'watchedProductIds',
-          'updatedAt', 'totalTransactions', 'attendanceDays', 'sellerVerified'
-        ])
-        && validWatchIds(data)
-        && (!data.keys().hasAny(['totalTransactions']) || data.totalTransactions == 0)
-        && (!data.keys().hasAny(['attendanceDays']) || data.attendanceDays == 0)
-        && (!data.keys().hasAny(['sellerVerified']) || data.sellerVerified == false);
-    }
-
-    match /products/{productId} {
-      // Le catalogue (dont coûts et marges) n'est lisible qu'après connexion.
-      allow read: if signedIn();
-      allow create, update, delete: if false;
-    }
-
     match /users/{userId} {
-      allow read: if ownsUser(userId);
-      allow create: if ownsUser(userId) && validInitialProfile(request.resource.data);
-      allow update: if ownsUser(userId)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'sellerShopId', 'sellerPublicName', 'sellerDescription', 'sellerDirectoryEnabled',
-          'sellerProfileUpdatedAt', 'createdAt', 'accountCreatedAt', 'watchedProductIds', 'updatedAt'
-        ])
-        && validWatchIds(request.resource.data)
-        // Identifiant boutique et date de création ne peuvent être remplacés après leur initialisation.
-        && (!resource.data.keys().hasAny(['sellerShopId']) || request.resource.data.sellerShopId == resource.data.sellerShopId)
-        && (!resource.data.keys().hasAny(['createdAt']) || request.resource.data.createdAt == resource.data.createdAt)
-        && (!resource.data.keys().hasAny(['accountCreatedAt']) || request.resource.data.accountCreatedAt == resource.data.accountCreatedAt);
-      allow delete: if false;
-
-      match /watchlist/{watchId} {
-        allow read: if ownsUser(userId);
-        allow create: if ownsUser(userId)
-          && request.resource.data.keys().hasOnly(['productId', 'createdAt'])
-          && request.resource.data.productId is string
-          && request.resource.data.productId.size() > 0
-          && request.resource.data.productId.size() <= 300
-          && request.resource.data.createdAt == request.time
-          && getAfter(/databases/$(database)/documents/users/$(userId)).data.watchedProductIds.hasAny([request.resource.data.productId])
-          && getAfter(/databases/$(database)/documents/users/$(userId)).data.watchedProductIds.size() <= 30;
-        allow update: if false;
-        allow delete: if ownsUser(userId)
-          && !getAfter(/databases/$(database)/documents/users/$(userId)).data.watchedProductIds.hasAny([resource.data.productId]);
+      function isOwner() {
+        return request.auth != null && request.auth.uid == userId;
       }
-
-      // Les anciennes transactions et activités restent privées et non modifiables depuis le navigateur.
-      match /sellerActivity/{dayId} {
-        allow read: if ownsUser(userId);
-        allow write: if false;
-      }
-      match /sellerTransactions/{eventId} {
-        allow read: if ownsUser(userId);
-        allow write: if false;
+      allow read: if isOwner();
+      // Les écritures de veille passent par une transaction serveur qui vérifie le plafond de 30.
+      allow create, update, delete: if false;
+      match /watchlist/{productId} {
+        allow read: if request.auth != null && request.auth.uid == userId;
+        allow create, update, delete: if false;
       }
     }
 
-    match /sellers/{shopId} {
-      allow get, list: if resource.data.directoryEnabled == true;
-      allow create, update: if signedIn()
-        && request.resource.data.keys().hasOnly(['shopId', 'name', 'description', 'directoryEnabled'])
-        && request.resource.data.shopId == shopId
-        && request.resource.data.directoryEnabled == true
-        && getAfter(ownerProfilePath()).data.sellerShopId == shopId
-        && getAfter(ownerProfilePath()).data.sellerDirectoryEnabled == true
-        && request.resource.data.name == getAfter(ownerProfilePath()).data.sellerPublicName
-        && request.resource.data.description == getAfter(ownerProfilePath()).data.sellerDescription;
-      allow delete: if signedIn()
-        && getAfter(ownerProfilePath()).data.sellerShopId == shopId
-        && getAfter(ownerProfilePath()).data.sellerDirectoryEnabled == false;
-
-      match /products/{productId} {
-        allow read: if get(/databases/$(database)/documents/sellers/$(shopId)).data.directoryEnabled == true;
-        allow write: if false;
-      }
-    }
-
-    match /{document=**} {
+    // Le catalogue synchronisé est uniquement accessible aux fonctions serveur (Admin SDK).
+    match /catalogProducts/{productId} {
       allow read, write: if false;
     }
   }
